@@ -1,14 +1,7 @@
 #include <Arduino.h>
 #include <cstdint>
 
-#define LDR_PIN    4
-#define RELAY_PIN 13
-#define BOOT_PIN   0
 #define LED_PIN RGB_BUILTIN
-
-const uint16_t THRESHOLD_DARK  = 1800;
-const uint16_t THRESHOLD_LIGHT = 2400;
-const uint8_t LED_BRIGHTNESS = 30;
 
 enum WorkMode {
   MODE_AUTO,
@@ -16,6 +9,46 @@ enum WorkMode {
   MODE_ALWAYS_OFF
 };
 
+class LedRgb {
+  private:
+    uint8_t _pin;
+    uint8_t _brightness;
+  public:
+    LedRgb(uint8_t pin, uint8_t brightness = 30)
+      : _pin(pin),
+      _brightness(brightness) {
+    }
+
+    void init() {
+      neopixelWrite(_pin, 0, _brightness, 0);
+    }
+
+    void set(WorkMode state) {
+      switch (state) {
+      // AUTO -> green
+      case MODE_AUTO:
+          neopixelWrite(_pin, 0, _brightness, 0);
+          break;
+      // ALWAYS_ON -> blue
+      case MODE_ALWAYS_ON:
+          neopixelWrite(_pin, 0, 0, _brightness);
+          break;
+      // ALWAYS_OFF -> red
+      case MODE_ALWAYS_OFF:
+          neopixelWrite(_pin, _brightness, 0, 0);
+          break;
+      }
+    }
+};
+
+constexpr uint8_t LDR_PIN = 4;
+constexpr uint8_t RELAY_PIN = 13;
+constexpr uint8_t BOOT_PIN = 0;
+constexpr uint16_t THRESHOLD_DARK  = 1800;
+constexpr uint16_t THRESHOLD_LIGHT = 2400;
+constexpr uint8_t LED_BRIGHTNESS = 30;
+
+LedRgb ledRgb(RGB_BUILTIN);
 WorkMode currentMode = MODE_AUTO;
 
 bool relayState = false;
@@ -25,43 +58,6 @@ bool buttonState = HIGH;
 const uint8_t DEBOUNCE_DELAY = 50;
 
 uint32_t lastDebounceTime = 0;
-uint32_t lastPrintTime = 0;
-
-
-// =====================================================
-// RGB LED
-// =====================================================
-void setModeLed() {
-  switch (currentMode) {
-    // Auto -> green
-    case MODE_AUTO:
-      neopixelWrite(
-        LED_PIN,
-        0,
-        LED_BRIGHTNESS,
-        0
-      );
-      break;
-    // Always ON -> blue
-    case MODE_ALWAYS_ON:
-      neopixelWrite(
-        LED_PIN,
-        0,
-        0,
-        LED_BRIGHTNESS
-      );
-      break;
-    // Off -> red
-    case MODE_ALWAYS_OFF:
-      neopixelWrite(
-        LED_PIN,
-        LED_BRIGHTNESS,
-        0,
-        0
-      );
-      break;
-  }
-}
 
 // =====================================================
 // Relay control
@@ -73,23 +69,6 @@ void setRelay(bool state) {
     RELAY_PIN,
     relayState ? HIGH : LOW
   );
-}
-
-
-// =====================================================
-// Mode name
-// =====================================================
-const char* getModeName() {
-  switch (currentMode) {
-    case MODE_AUTO:
-      return "AUTO";
-    case MODE_ALWAYS_ON:
-      return "ALWAYS ON";
-    case MODE_ALWAYS_OFF:
-      return "ALWAYS OFF";
-  }
-
-  return "UNKNOWN";
 }
 
 // =====================================================
@@ -108,19 +87,14 @@ void nextMode() {
       break;
   }
 
-  setModeLed();
-
-  Serial.println();
-  Serial.print("MODE -> ");
-  Serial.println(getModeName());
-  Serial.println();
+  ledRgb.set(currentMode);
 }
 
 // =====================================================
 // Boot btn control
 // =====================================================
 void handleButton() {
-  bool reading = digitalRead(BOOT_PIN);
+  const bool reading = digitalRead(BOOT_PIN);
 
   if (reading != lastButtonReading) {
     lastDebounceTime = millis();
@@ -139,8 +113,6 @@ void handleButton() {
 }
 
 void setup() {
-  Serial.begin(115200);
-
   pinMode(RELAY_PIN, OUTPUT);
   pinMode(BOOT_PIN, INPUT_PULLUP);
   pinMode(LDR_PIN, INPUT);
@@ -150,23 +122,15 @@ void setup() {
 
   setRelay(false);
 
+  ledRgb.init();
   currentMode = MODE_AUTO;
-
-  setModeLed();
-
-  Serial.println();
-  Serial.println("==========================");
-  Serial.println(" Light Relay Controller");
-  Serial.println("==========================");
-  Serial.println();
-
-  Serial.println("Mode: AUTO");
+  ledRgb.set(currentMode);
 }
 
 void loop() {
   handleButton();
 
-  int adcValue = analogRead(LDR_PIN);
+  const int adcValue = analogRead(LDR_PIN);
 
   switch (currentMode) {
     case MODE_AUTO:
@@ -183,18 +147,5 @@ void loop() {
     case MODE_ALWAYS_OFF:
       setRelay(false);
       break;
-  }
-
-  if (millis() - lastPrintTime >= 500) {
-    lastPrintTime = millis();
-
-    Serial.print("ADC: ");
-    Serial.print(adcValue);
-
-    Serial.print(" | Mode: ");
-    Serial.print(getModeName());
-
-    Serial.print(" | Relay: ");
-    Serial.println(relayState ? "ON" : "OFF");
   }
 }
