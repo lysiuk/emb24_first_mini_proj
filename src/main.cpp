@@ -1,200 +1,65 @@
 #include <Arduino.h>
-#include <cstdint>
 
-#define LDR_PIN    4
-#define RELAY_PIN 13
-#define BOOT_PIN   0
-#define LED_PIN RGB_BUILTIN
+constexpr uint8_t RED_PIN = 4;
+constexpr uint8_t YELLOW_PIN = 6;
+constexpr uint8_t GREEN_PIN = 13;
 
-const uint16_t THRESHOLD_DARK  = 1800;
-const uint16_t THRESHOLD_LIGHT = 2400;
-const uint8_t LED_BRIGHTNESS = 30;
+uint32_t last_toggle_red = 0;
+constexpr uint32_t interval_red = 200;
+bool red_state = LOW;
 
-enum WorkMode {
-  MODE_AUTO,
-  MODE_ALWAYS_ON,
-  MODE_ALWAYS_OFF
-};
+uint32_t last_toggle_yellow = 0;
+constexpr uint32_t interval_yellow = 500;
+bool yellow_state = LOW;
 
-WorkMode currentMode = MODE_AUTO;
+uint32_t last_toggle_green = 0;
+constexpr uint32_t interval_green = 1000;
+bool green_state = LOW;
 
-bool relayState = false;
-bool lastButtonReading = HIGH;
-bool buttonState = HIGH;
+void update_led_red() {
+  uint32_t now = millis();
 
-const uint8_t DEBOUNCE_DELAY = 50;
-
-uint32_t lastDebounceTime = 0;
-uint32_t lastPrintTime = 0;
-
-
-// =====================================================
-// RGB LED
-// =====================================================
-void setModeLed() {
-  switch (currentMode) {
-    // Auto -> green
-    case MODE_AUTO:
-      neopixelWrite(
-        LED_PIN,
-        0,
-        LED_BRIGHTNESS,
-        0
-      );
-      break;
-    // Always ON -> blue
-    case MODE_ALWAYS_ON:
-      neopixelWrite(
-        LED_PIN,
-        0,
-        0,
-        LED_BRIGHTNESS
-      );
-      break;
-    // Off -> red
-    case MODE_ALWAYS_OFF:
-      neopixelWrite(
-        LED_PIN,
-        LED_BRIGHTNESS,
-        0,
-        0
-      );
-      break;
+  if (now - last_toggle_red >= interval_red) {
+    red_state = !red_state;
+    digitalWrite(RED_PIN, red_state);
+    last_toggle_red = now;
   }
 }
 
-// =====================================================
-// Relay control
-// =====================================================
-void setRelay(bool state) {
-  relayState = state;
+void update_led_yellow() {
+  uint32_t now = millis();
 
-  digitalWrite(
-    RELAY_PIN,
-    relayState ? HIGH : LOW
-  );
+  if (now - last_toggle_yellow >= interval_yellow) {
+    yellow_state = !yellow_state;
+    digitalWrite(YELLOW_PIN, yellow_state);
+    last_toggle_yellow = now;
+  }
 }
 
+void update_led_green() {
+  uint32_t now = millis();
 
-// =====================================================
-// Mode name
-// =====================================================
-const char* getModeName() {
-  switch (currentMode) {
-    case MODE_AUTO:
-      return "AUTO";
-    case MODE_ALWAYS_ON:
-      return "ALWAYS ON";
-    case MODE_ALWAYS_OFF:
-      return "ALWAYS OFF";
-  }
-
-  return "UNKNOWN";
-}
-
-// =====================================================
-// Mode switch
-// =====================================================
-void nextMode() {
-  switch (currentMode) {
-    case MODE_AUTO:
-      currentMode = MODE_ALWAYS_ON;
-      break;
-    case MODE_ALWAYS_ON:
-      currentMode = MODE_ALWAYS_OFF;
-      break;
-    case MODE_ALWAYS_OFF:
-      currentMode = MODE_AUTO;
-      break;
-  }
-
-  setModeLed();
-
-  Serial.println();
-  Serial.print("MODE -> ");
-  Serial.println(getModeName());
-  Serial.println();
-}
-
-// =====================================================
-// Boot btn control
-// =====================================================
-void handleButton() {
-  bool reading = digitalRead(BOOT_PIN);
-
-  if (reading != lastButtonReading) {
-    lastDebounceTime = millis();
-    lastButtonReading = reading;
-  }
-
-  if ((millis() - lastDebounceTime) > DEBOUNCE_DELAY) {
-    if (reading != buttonState) {
-      buttonState = reading;
-
-      if (buttonState == LOW) {
-        nextMode();
-      }
-    }
+  if (now - last_toggle_green >= interval_green) {
+    green_state = !green_state;
+    digitalWrite(GREEN_PIN, green_state);
+    last_toggle_green = now;
   }
 }
 
 void setup() {
   Serial.begin(115200);
 
-  pinMode(RELAY_PIN, OUTPUT);
-  pinMode(BOOT_PIN, INPUT_PULLUP);
-  pinMode(LDR_PIN, INPUT);
+  pinMode(RED_PIN, OUTPUT);
+  pinMode(YELLOW_PIN, OUTPUT);
+  pinMode(GREEN_PIN, OUTPUT);
 
-  analogReadResolution(12);
-  analogSetPinAttenuation(LDR_PIN, ADC_11db);
-
-  setRelay(false);
-
-  currentMode = MODE_AUTO;
-
-  setModeLed();
-
-  Serial.println();
-  Serial.println("==========================");
-  Serial.println(" Light Relay Controller");
-  Serial.println("==========================");
-  Serial.println();
-
-  Serial.println("Mode: AUTO");
+  digitalWrite(RED_PIN, LOW);
+  digitalWrite(YELLOW_PIN, LOW);
+  digitalWrite(GREEN_PIN, LOW);
 }
 
 void loop() {
-  handleButton();
-
-  int adcValue = analogRead(LDR_PIN);
-
-  switch (currentMode) {
-    case MODE_AUTO:
-      if (adcValue < THRESHOLD_DARK) {
-        setRelay(true);
-      }
-      else if (adcValue > THRESHOLD_LIGHT) {
-        setRelay(false);
-      }
-      break;
-    case MODE_ALWAYS_ON:
-      setRelay(true);
-      break;
-    case MODE_ALWAYS_OFF:
-      setRelay(false);
-      break;
-  }
-
-  if (millis() - lastPrintTime >= 500) {
-    lastPrintTime = millis();
-
-    Serial.print("ADC: ");
-    Serial.print(adcValue);
-
-    Serial.print(" | Mode: ");
-    Serial.print(getModeName());
-
-    Serial.print(" | Relay: ");
-    Serial.println(relayState ? "ON" : "OFF");
-  }
+  update_led_red();
+  update_led_yellow();
+  update_led_green();
 }
