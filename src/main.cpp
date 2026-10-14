@@ -1,200 +1,185 @@
 #include <Arduino.h>
-#include <cstdint>
 
-#define LDR_PIN    4
-#define RELAY_PIN 13
-#define BOOT_PIN   0
-#define LED_PIN RGB_BUILTIN
+constexpr uint8_t RELAY_PIN = 13;
+constexpr uint8_t CONTACT_PIN = 4;
 
-const uint16_t THRESHOLD_DARK  = 1800;
-const uint16_t THRESHOLD_LIGHT = 2400;
-const uint8_t LED_BRIGHTNESS = 30;
+constexpr uint8_t RELAY_ON = HIGH;
+constexpr uint8_t RELAY_OFF = LOW;
 
-enum WorkMode {
-  MODE_AUTO,
-  MODE_ALWAYS_ON,
-  MODE_ALWAYS_OFF
-};
+constexpr int TEST_COUNT = 10;
 
-WorkMode currentMode = MODE_AUTO;
+constexpr uint32_t DEBOUNCE_US = 8000;
+constexpr uint32_t TIMEOUT_US = 100000;
 
-bool relayState = false;
-bool lastButtonReading = HIGH;
-bool buttonState = HIGH;
+volatile uint32_t firstEdgeUs = 0;
+volatile uint32_t lastEdgeUs = 0;
 
-const uint8_t DEBOUNCE_DELAY = 50;
+volatile bool edgeDetected = false;
+volatile bool measuring = false;
 
-uint32_t lastDebounceTime = 0;
-uint32_t lastPrintTime = 0;
+portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 
+uint32_t onTimes[TEST_COUNT];
+uint32_t offTimes[TEST_COUNT];
 
-// =====================================================
-// RGB LED
-// =====================================================
-void setModeLed() {
-  switch (currentMode) {
-    // Auto -> green
-    case MODE_AUTO:
-      neopixelWrite(
-        LED_PIN,
-        0,
-        LED_BRIGHTNESS,
-        0
-      );
-      break;
-    // Always ON -> blue
-    case MODE_ALWAYS_ON:
-      neopixelWrite(
-        LED_PIN,
-        0,
-        0,
-        LED_BRIGHTNESS
-      );
-      break;
-    // Off -> red
-    case MODE_ALWAYS_OFF:
-      neopixelWrite(
-        LED_PIN,
-        LED_BRIGHTNESS,
-        0,
-        0
-      );
-      break;
-  }
-}
+// Contact interrupt
+void IRAM_ATTR contactISR() {
+  uint32_t now = micros();
 
-// =====================================================
-// Relay control
-// =====================================================
-void setRelay(bool state) {
-  relayState = state;
+  portENTER_CRITICAL_ISR(&mux);
 
-  digitalWrite(
-    RELAY_PIN,
-    relayState ? HIGH : LOW
-  );
-}
+  if (measuring) {
+    if (!edgeDetected) {
+      firstEdgeUs = now;
+      edgeDetected = true;
+    }
 
-
-// =====================================================
-// Mode name
-// =====================================================
-const char* getModeName() {
-  switch (currentMode) {
-    case MODE_AUTO:
-      return "AUTO";
-    case MODE_ALWAYS_ON:
-      return "ALWAYS ON";
-    case MODE_ALWAYS_OFF:
-      return "ALWAYS OFF";
+    lastEdgeUs = now;
   }
 
-  return "UNKNOWN";
+  portEXIT_CRITICAL_ISR(&mux);
 }
 
-// =====================================================
-// Mode switch
-// =====================================================
-void nextMode() {
-  switch (currentMode) {
-    case MODE_AUTO:
-      currentMode = MODE_ALWAYS_ON;
-      break;
-    case MODE_ALWAYS_ON:
-      currentMode = MODE_ALWAYS_OFF;
-      break;
-    case MODE_ALWAYS_OFF:
-      currentMode = MODE_AUTO;
-      break;
+// Measure first contact movement,
+// accepting only a stable target state.
+uint32_t measureRelay(bool turnOn) {
+  const uint8_t expectedContact = turnOn ? LOW : HIGH;
+
+  portENTER_CRITICAL(&mux);
+
+  measuring = true;
+  edgeDetected = false;
+  firstEdgeUs = 0;
+  lastEdgeUs = 0;
+  
+  portEXIT_CRITICAL(&mux);
+
+  uint32_t startUs = micros();
+
+  digitalWrite(RELAY_PIN, turnOn ? RELAY_ON : RELAY_OFF);
+
+  while ((uint32_t)(micros() - startUs) < TIMEOUT_US) {
+    bool detected;
+    uint32_t first;
+    uint32_t last;
+
+    portENTER_CRITICAL(&mux);
+
+    detected = edgeDetected;
+    first = firstEdgeUs;
+    last = lastEdgeUs;
+
+    portEXIT_CRITICAL(&mux);
+
+    if (
+      detected && (uint32_t)(micros() - last) >= 
+      DEBOUNCE_US && digitalRead(CONTACT_PIN) == 
+      expectedContact
+    ) {
+      portENTER_CRITICAL(&mux);
+
+      measuring = false;
+
+      portEXIT_CRITICAL(&mux);
+
+      return first - startUs;
+    }
+
+    delayMicroseconds(50);
   }
 
-  setModeLed();
+  portENTER_CRITICAL(&mux);
 
-  Serial.println();
-  Serial.print("MODE -> ");
-  Serial.println(getModeName());
-  Serial.println();
+  measuring = false;
+
+  portEXIT_CRITICAL(&mux);
+
+  return UINT32_MAX;
 }
 
-// =====================================================
-// Boot btn control
-// =====================================================
-void handleButton() {
-  bool reading = digitalRead(BOOT_PIN);
+void printAverage(const char* label, const uint32_t* values) {
+  uint64_t sum = 0;
+  int count = 0;
 
-  if (reading != lastButtonReading) {
-    lastDebounceTime = millis();
-    lastButtonReading = reading;
-  }
-
-  if ((millis() - lastDebounceTime) > DEBOUNCE_DELAY) {
-    if (reading != buttonState) {
-      buttonState = reading;
-
-      if (buttonState == LOW) {
-        nextMode();
-      }
+  for (int i = 0; i < TEST_COUNT; i++) {
+    if (values[i] != UINT32_MAX) {
+      sum += values[i];
+      count++;
     }
   }
+
+  Serial.print(label);
+
+  if (count == 0) {
+    Serial.println("No valid measurements");
+    return;
+  }
+
+  Serial.printf(
+    "%.3f ms (%d valid)\n",
+    (double)sum / count / 1000.0,
+    count
+  );
 }
 
 void setup() {
   Serial.begin(115200);
+  delay(1500);
 
+  digitalWrite(RELAY_PIN, RELAY_OFF);
   pinMode(RELAY_PIN, OUTPUT);
-  pinMode(BOOT_PIN, INPUT_PULLUP);
-  pinMode(LDR_PIN, INPUT);
 
-  analogReadResolution(12);
-  analogSetPinAttenuation(LDR_PIN, ADC_11db);
+  pinMode(CONTACT_PIN, INPUT_PULLUP);
 
-  setRelay(false);
+  attachInterrupt(
+    digitalPinToInterrupt(CONTACT_PIN),
+    contactISR,
+    CHANGE
+  );
 
-  currentMode = MODE_AUTO;
-
-  setModeLed();
+  delay(1000);
 
   Serial.println();
-  Serial.println("==========================");
-  Serial.println(" Light Relay Controller");
-  Serial.println("==========================");
-  Serial.println();
+  Serial.println("=== RELAY TIMING TEST ===");
 
-  Serial.println("Mode: AUTO");
+  Serial.printf(
+    "Initial contact: %s\n",
+    digitalRead(CONTACT_PIN) == HIGH ? "OPEN" : "CLOSED"
+  );
+
+  for (int i = 0; i < TEST_COUNT; i++) {
+    Serial.printf("\n--- Test %d/%d ---\n", i + 1, TEST_COUNT);
+
+    onTimes[i] = measureRelay(true);
+
+    if (onTimes[i] == UINT32_MAX) {
+      Serial.println("ON: TIMEOUT");
+    } else {
+      Serial.printf("ON:  %.3f ms\n", onTimes[i] / 1000.0);
+    }
+
+    delay(500);
+
+    offTimes[i] = measureRelay(false);
+
+    if (offTimes[i] == UINT32_MAX) {
+        Serial.println("OFF: TIMEOUT");
+    } else {
+        Serial.printf("OFF: %.3f ms\n", offTimes[i] / 1000.0);
+    }
+
+    delay(500);
+  }
+
+  Serial.println();
+  Serial.println("===== SUMMARY =====");
+
+  printAverage("Average ON:  ", onTimes);
+  printAverage("Average OFF: ", offTimes);
+
+  Serial.println("===================");
 }
 
 void loop() {
-  handleButton();
-
-  int adcValue = analogRead(LDR_PIN);
-
-  switch (currentMode) {
-    case MODE_AUTO:
-      if (adcValue < THRESHOLD_DARK) {
-        setRelay(true);
-      }
-      else if (adcValue > THRESHOLD_LIGHT) {
-        setRelay(false);
-      }
-      break;
-    case MODE_ALWAYS_ON:
-      setRelay(true);
-      break;
-    case MODE_ALWAYS_OFF:
-      setRelay(false);
-      break;
-  }
-
-  if (millis() - lastPrintTime >= 500) {
-    lastPrintTime = millis();
-
-    Serial.print("ADC: ");
-    Serial.print(adcValue);
-
-    Serial.print(" | Mode: ");
-    Serial.print(getModeName());
-
-    Serial.print(" | Relay: ");
-    Serial.println(relayState ? "ON" : "OFF");
-  }
+  // Test runs once at startup
 }
