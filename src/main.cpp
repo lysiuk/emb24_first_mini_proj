@@ -1,200 +1,127 @@
 #include <Arduino.h>
-#include <cstdint>
+#include <esp_arduino_version.h>
 
-#define LDR_PIN    4
-#define RELAY_PIN 13
-#define BOOT_PIN   0
-#define LED_PIN RGB_BUILTIN
+constexpr uint8_t BUZZER_PIN = 13;
+constexpr uint8_t PWM_CHANNEL = 0;
 
-const uint16_t THRESHOLD_DARK  = 1800;
-const uint16_t THRESHOLD_LIGHT = 2400;
-const uint8_t LED_BRIGHTNESS = 30;
+// Notes in Hz
+constexpr uint16_t C5  = 523;
+constexpr uint16_t D5  = 587;
+constexpr uint16_t Eb5 = 622;
+constexpr uint16_t F5  = 698;
+constexpr uint16_t G5  = 784;
+constexpr uint16_t A5_1  = 880;
+constexpr uint16_t Ab5 = 831;
+constexpr uint16_t Bb5 = 932;
+constexpr uint16_t C6  = 1047;
 
-enum WorkMode {
-  MODE_AUTO,
-  MODE_ALWAYS_ON,
-  MODE_ALWAYS_OFF
+struct Note {
+    uint16_t frequency;
+    uint8_t frames;
 };
 
-WorkMode currentMode = MODE_AUTO;
+// Battle City - Stage Start
+const Note melody[] = {
+    {C5, 8}, {D5, 8}, {Eb5, 8},
+    {C5, 8}, {D5, 8}, {Eb5, 8},
 
-bool relayState = false;
-bool lastButtonReading = HIGH;
-bool buttonState = HIGH;
+    {Eb5, 8}, {F5, 8}, {G5, 8},
+    {Eb5, 8}, {F5, 8}, {G5, 8},
 
-const uint8_t DEBOUNCE_DELAY = 50;
+    {F5, 8}, {G5, 8}, {A5_1, 8},
+    {F5, 8}, {G5, 8}, {A5_1, 8},
 
-uint32_t lastDebounceTime = 0;
-uint32_t lastPrintTime = 0;
+    {Ab5, 8}, {Bb5, 8}, {C6, 8},
+    {Ab5, 8}, {Bb5, 8}, {C6, 8},
 
+    {C6, 24}, {C6, 8}, {C6, 8},
+    {C6, 8}, {C6, 24}
+};
 
-// =====================================================
-// RGB LED
-// =====================================================
-void setModeLed() {
-  switch (currentMode) {
-    // Auto -> green
-    case MODE_AUTO:
-      neopixelWrite(
-        LED_PIN,
-        0,
-        LED_BRIGHTNESS,
-        0
-      );
-      break;
-    // Always ON -> blue
-    case MODE_ALWAYS_ON:
-      neopixelWrite(
-        LED_PIN,
-        0,
-        0,
-        LED_BRIGHTNESS
-      );
-      break;
-    // Off -> red
-    case MODE_ALWAYS_OFF:
-      neopixelWrite(
-        LED_PIN,
-        LED_BRIGHTNESS,
-        0,
-        0
-      );
-      break;
-  }
-}
+constexpr size_t NOTE_COUNT = sizeof(melody) / sizeof(melody[0]);
 
-// =====================================================
-// Relay control
-// =====================================================
-void setRelay(bool state) {
-  relayState = state;
+constexpr uint32_t REPEAT_PAUSE = 1500;
+constexpr uint8_t GATE_PERCENT = 92;
 
-  digitalWrite(
-    RELAY_PIN,
-    relayState ? HIGH : LOW
-  );
-}
+size_t noteIndex = 0;
+uint32_t noteStart = 0;
+uint32_t noteDuration = 0;
 
+enum class PlayerState {
+    START,
+    PLAY,
+    GAP,
+    PAUSE
+};
 
-// =====================================================
-// Mode name
-// =====================================================
-const char* getModeName() {
-  switch (currentMode) {
-    case MODE_AUTO:
-      return "AUTO";
-    case MODE_ALWAYS_ON:
-      return "ALWAYS ON";
-    case MODE_ALWAYS_OFF:
-      return "ALWAYS OFF";
-  }
+PlayerState state = PlayerState::START;
 
-  return "UNKNOWN";
-}
-
-// =====================================================
-// Mode switch
-// =====================================================
-void nextMode() {
-  switch (currentMode) {
-    case MODE_AUTO:
-      currentMode = MODE_ALWAYS_ON;
-      break;
-    case MODE_ALWAYS_ON:
-      currentMode = MODE_ALWAYS_OFF;
-      break;
-    case MODE_ALWAYS_OFF:
-      currentMode = MODE_AUTO;
-      break;
-  }
-
-  setModeLed();
-
-  Serial.println();
-  Serial.print("MODE -> ");
-  Serial.println(getModeName());
-  Serial.println();
-}
-
-// =====================================================
-// Boot btn control
-// =====================================================
-void handleButton() {
-  bool reading = digitalRead(BOOT_PIN);
-
-  if (reading != lastButtonReading) {
-    lastDebounceTime = millis();
-    lastButtonReading = reading;
-  }
-
-  if ((millis() - lastDebounceTime) > DEBOUNCE_DELAY) {
-    if (reading != buttonState) {
-      buttonState = reading;
-
-      if (buttonState == LOW) {
-        nextMode();
-      }
-    }
-  }
+void playTone(uint16_t frequency) {
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+    ledcWriteTone(BUZZER_PIN, frequency);
+#else
+    ledcWriteTone(PWM_CHANNEL, frequency);
+#endif
 }
 
 void setup() {
-  Serial.begin(115200);
+    Serial.begin(115200);
 
-  pinMode(RELAY_PIN, OUTPUT);
-  pinMode(BOOT_PIN, INPUT_PULLUP);
-  pinMode(LDR_PIN, INPUT);
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+    if (!ledcAttach(BUZZER_PIN, 2000, 8)) {
+        Serial.println("LEDC init failed");
+        state = PlayerState::PAUSE;
+        return;
+    }
+#else
+    ledcSetup(PWM_CHANNEL, 2000, 8);
+    ledcAttachPin(BUZZER_PIN, PWM_CHANNEL);
+#endif
 
-  analogReadResolution(12);
-  analogSetPinAttenuation(LDR_PIN, ADC_11db);
-
-  setRelay(false);
-
-  currentMode = MODE_AUTO;
-
-  setModeLed();
-
-  Serial.println();
-  Serial.println("==========================");
-  Serial.println(" Light Relay Controller");
-  Serial.println("==========================");
-  Serial.println();
-
-  Serial.println("Mode: AUTO");
+    playTone(0);
+    Serial.println("Battle City - Stage Start");
 }
 
 void loop() {
-  handleButton();
+    const uint32_t now = millis();
 
-  int adcValue = analogRead(LDR_PIN);
+    switch (state) {
+        case PlayerState::START: {
+            const Note& note = melody[noteIndex];
+            noteDuration = note.frames * 1000UL / 60;
 
-  switch (currentMode) {
-    case MODE_AUTO:
-      if (adcValue < THRESHOLD_DARK) {
-        setRelay(true);
-      }
-      else if (adcValue > THRESHOLD_LIGHT) {
-        setRelay(false);
-      }
-      break;
-    case MODE_ALWAYS_ON:
-      setRelay(true);
-      break;
-    case MODE_ALWAYS_OFF:
-      setRelay(false);
-      break;
-  }
+            playTone(note.frequency);
+            noteStart = now;
+            state = PlayerState::PLAY;
+            break;
+        }
 
-  if (millis() - lastPrintTime >= 500) {
-    lastPrintTime = millis();
+        case PlayerState::PLAY:
+            if (now - noteStart >=
+                noteDuration * GATE_PERCENT / 100) {
+                playTone(0);
+                state = PlayerState::GAP;
+            }
+            break;
 
-    Serial.print("ADC: ");
-    Serial.print(adcValue);
+        case PlayerState::GAP:
+            if (now - noteStart >= noteDuration) {
+                noteIndex++;
 
-    Serial.print(" | Mode: ");
-    Serial.print(getModeName());
+                if (noteIndex >= NOTE_COUNT) {
+                    noteStart = now;
+                    state = PlayerState::PAUSE;
+                } else {
+                    state = PlayerState::START;
+                }
+            }
+            break;
 
-    Serial.print(" | Relay: ");
-    Serial.println(relayState ? "ON" : "OFF");
-  }
+        case PlayerState::PAUSE:
+            if (now - noteStart >= REPEAT_PAUSE) {
+                noteIndex = 0;
+                state = PlayerState::START;
+            }
+            break;
+    }
 }
